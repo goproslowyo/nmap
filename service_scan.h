@@ -81,8 +81,8 @@
 #include <assert.h>
 
 /**********************  DEFINES/ENUMS ***********************************/
-#define DEFAULT_SERVICEWAITMS 5000
-#define DEFAULT_TCPWRAPPEDMS 2000   // connections closed after this timeout are not considered "tcpwrapped"
+#define DEFAULT_SERVICEWAITMS 300
+#define DEFAULT_TCPWRAPPEDMS 200   // connections closed after this timeout are not considered "tcpwrapped"
 #define DEFAULT_CONNECT_TIMEOUT 5000
 #define DEFAULT_CONNECT_SSL_TIMEOUT 8000  // includes connect() + ssl negotiation
 #define MAXFALLBACKS 20 /* How many comma separated fallbacks are allowed in the service-probes file? */
