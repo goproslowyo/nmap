@@ -292,44 +292,139 @@ void FingerPrint::erase() {
      | (or)
      - (range)
    No parentheses are allowed. */
-static bool expr_match(const char *val, const char *expr) {
+bool expr_match(const char *val, size_t vlen, const char *expr, size_t explen, bool do_nested) {
   const char *p, *q, *q1;  /* OHHHH YEEEAAAAAHHHH!#!@#$!% */
-  char *endptr;
-  unsigned int val_num, expr_num, expr_num1;
-  bool is_numeric;
+  if (vlen == 0)
+    vlen = strlen(val);
+  if (explen == 0)
+    explen = strlen(expr);
+
+  // If both are empty, match; else if either is empty, no match.
+  if (vlen == 0) {
+    return explen == 0;
+  }
+  else if (explen == 0) {
+    return vlen == 0;
+  }
 
   p = expr;
+  const char * const p_end = p + explen;
 
-  val_num = strtol(val, &endptr, 16);
-  is_numeric = !*endptr;
-  // TODO: this could be a lot faster if we compiled fingerprints to a bytecode
-  // instead of re-parsing every time.
   do {
-    q = strchr(p, '|');
-    if (is_numeric && (*p == '<' || *p == '>')) {
-      expr_num = strtol(p + 1, &endptr, 16);
-      if (endptr == q || !*endptr) {
-        if ((*p == '<' && val_num < expr_num)
-            || (*p == '>' && val_num > expr_num)) {
-          return true;
+    const char *nest = NULL; // where the [] nested expr starts
+    const char *subval = val; // portion of val after previous nest and before the next one
+    size_t sublen; // length of subval not subject to nested matching
+    q = strchr_p(p, p_end, '|');
+    nest = strchr_p(p, q ? q : p_end, '[');
+
+    // if we're already in a nested expr, we skip this and just match as usual.
+    if (do_nested && nest) {
+      // As long as we keep finding nested portions, e.g. M[>500]ST11W[1-5]
+      while (nest) {
+        q1 = strchr_p(nest, p_end, ']');
+        assert(q1);
+        if (q && q < q1) {
+          // "AB[C|D]E|XYZ"
+          q = strchr_p(q1, p_end, '|');
+        }
+        // "AB[C-D]E" or  or "AB[C-D]E|F"
+        sublen = nest - p;
+        //fprintf(stderr, "subcmp(%-.*s, %-.*s)\n", sublen, p, sublen, subval);
+        if (strncmp(p, subval, sublen) != 0) {
+          goto next_expr;
+        }
+        nest++;
+        subval += sublen;
+        size_t nlen = 0;
+        while (isxdigit(subval[nlen])) {
+          nlen++;
+        }
+        p = q1 + 1;
+        //fprintf(stderr, "nest: %-.*s cmp %-.*s\n", nlen, subval, q1 - nest, nest);
+        if (nlen > 0 && expr_match(subval, nlen, nest, q1 - nest, false)) {
+          subval += nlen;
+          nest = strchr_p(p, q ? q : p_end, '[');
+        }
+        else {
+          goto next_expr;
         }
       }
-    } else if (is_numeric && ((q1 = strchr(p, '-')) != NULL)) {
-      expr_num = strtol(p, &endptr, 16);
-      if (endptr == q1) {
-        expr_num1 = strtol(q1 + 1, &endptr, 16);
-        if (endptr == q || !*endptr) {
-          assert(expr_num1 > expr_num);
-          if (val_num >= expr_num && val_num <= expr_num1) {
-            return true;
-          }
-        }
-      }
-    } else {
-      if ((q && !strncmp(p, val, q - p)) || (!q && !strcmp(p, val))) {
+      // No more nested portions. string match the rest:
+      sublen = vlen - (subval - val);
+      if ((explen - (p - expr)) == sublen && !strncmp(subval, p, sublen)) {
         return true;
       }
+      else {
+        goto next_expr;
+      }
     }
+    // Now sublen is the length of the relevant portion of expr
+    sublen = q ? q - p : explen - (p - expr);
+    if (isxdigit(*subval)) {
+      while (*subval == '0' && vlen > 1) {
+        subval++;
+        vlen--;
+      }
+      if (*p == '>') {
+        do {
+          p++;
+          sublen--;
+        } while (*p == '0' && sublen > 1);
+        if ((vlen > sublen)
+            || (vlen == sublen && strncmp(subval, p, vlen) > 0)) {
+          return true;
+        }
+        goto next_expr;
+      }
+      else if (*p == '<') {
+        do {
+          p++;
+          sublen--;
+        } while (*p == '0' && sublen > 1);
+        if ((vlen < sublen)
+            || (vlen == sublen && strncmp(subval, p, vlen) < 0)) {
+          return true;
+        }
+        goto next_expr;
+      }
+      else if (isxdigit(*p)) {
+        while (sublen > 1 && *p == '0') {
+          p++;
+          sublen--;
+        }
+        q1 = strchr_p(p, q ? q : p_end, '-');
+        if (q1 != NULL) {
+          if (q1 == p) {
+            p--;
+            sublen++;
+          }
+          size_t sublen1 = q1 - p;
+          if ((vlen > sublen1)
+              || (vlen == sublen1 && strncmp(subval, p, vlen) >= 0)) {
+            p = q1 + 1;
+            sublen -= (sublen1 + 1);
+            while (sublen > 1 && *p == '0') {
+              p++;
+              sublen--;
+            }
+            if ((vlen < sublen)
+                || (vlen == sublen && strncmp(subval, p, vlen) <= 0)) {
+              return true;
+            }
+          }
+          goto next_expr;
+        }
+      }
+      else {
+        // subval isxdigit, but expr doesn't start with xdigit or < or >
+        goto next_expr;
+      }
+    }
+    //fprintf(stderr, "cmp(%-.*s, %-.*s)\n", sublen, p, vlen, subval);
+    if (vlen == sublen && !strncmp(p, subval, vlen)) {
+      return true;
+    }
+    next_expr:
     if (q)
       p = q + 1;
   } while (q);
@@ -349,6 +444,7 @@ static void AVal_match(const FingerTest &reference, const FingerTest &fprint, co
     return;
 
   const std::vector<Attr> &pointsV = points.Attrs;
+  bool tcp_opt_match = points.name == "OPS";
 
   const std::vector<const char *> &refV = *reference.results;
   assert(refV.size() == points.numAttrs);
@@ -367,7 +463,7 @@ static void AVal_match(const FingerTest &reference, const FingerTest &fprint, co
       fatal("%s: Got bogus point amount (%d) for test %s.%s", __func__, pointsThisTest, points.name.str, aDef.name.str);
     subtests += pointsThisTest;
 
-    if (expr_match(current_fp, current_ref)) {
+    if (expr_match(current_fp, 0, current_ref, 0, tcp_opt_match || aDef.name == "O")) {
       subtests_succeeded += pointsThisTest;
     } else {
       if (verbose)
@@ -678,8 +774,13 @@ bool FingerTest::str2AVal(const char *str, const char *end) {
   }
   if (def->hasR) {
     if (maxIdx > 0) {
-      assert(AVs[0] == NULL || 0 == strcmp("Y", AVs[0]));
-      AVs[0] = "Y";
+      if (AVs[0] == NULL) {
+        AVs[0] = "Y";
+      }
+      else if (!strchr(AVs[0], 'Y')) {
+        error("Test with AVals missing R=Y (R=%s)", AVs[0]);
+        return false;
+      }
     }
     else {
       assert(AVs[0] == NULL || 0 == strcmp("N", AVs[0]));
@@ -1068,6 +1169,15 @@ fparse:
       if (DB->MatchPoints)
         fatal("Found MatchPoints directive on line %d of %s even though it has previously been seen in the file", lineno, fname);
       parsingMatchPoints = true;
+    } else if (strncmp(line, "This nmap-os-db", 15) == 0) {
+      p = strstr(line, "Nmap ");
+      if (!p)
+        fatal("Parse error on line %d of nmap-os-db file: %s", lineno, line);
+      q = strchr(p + 5, ' ');
+      if (strncmp(p + 5, NMAP_NUM_VERSION, q - p) > 0) {
+        error("%sOS detection results may be inaccurate.", line);
+      }
+      continue;
     } else {
       error("Parse error on line %d of nmap-os-db file: %s", lineno, line);
       continue;
